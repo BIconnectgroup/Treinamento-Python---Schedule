@@ -1,0 +1,73 @@
+# Documentação Técnica: Arquitetura e Diretrizes de Implementação do APScheduler
+
+Este documento formaliza as diretrizes arquiteturais, padrões de implementação e protocolos de resiliência adotados neste repositório para o gerenciamento de tarefas automatizadas utilizando a biblioteca **APScheduler (Advanced Python Scheduler)**. 
+
+Este manual deve ser consultado obrigatoriamente para o design e a homologação de qualquer rotina agendada no projeto.
+
+---
+
+## 1. Arquitetura Sistêmica do Motor de Agendamento
+
+O APScheduler opera como um microssistema de agendamento desacoplado, estruturado estritamente sob 4 (quatro) componentes independentes de software. Compreender a topologia e o fluxo de controle entre esses pilares é fundamental para mitigar gargalos de IO e processamento.
+
+### 1.1. Gatilhos (Triggers)
+Contêm exclusivamente a lógica de tempo e calendário. São responsáveis por calcular a data/hora exata das próximas execuções com base nas regras fornecidas. Uma vez atingido o evento temporal, o gatilho notifica o agendador principal.
+
+### 1.2. Repositórios de Tarefas (Job Stores)
+Camada de persistência e gerenciamento de estado das tarefas. Armazenam os metadados e os argumentos originais das funções agendadas. Por padrão, o ciclo de vida é volátil (armazenado em memória via `MemoryJobStore`), mas pode ser delegado a repositórios persistentes (como sistemas relacionais via SQLAlchemy ou chave-valor via Redis) para garantir resiliência contra reinicializações do serviço.
+
+### 1.3. Executores (Executors)
+Mecanismos responsáveis pelo provisionamento e alocação de recursos computacionais para o processamento das tarefas. Movem a execução da tarefa do fluxo principal do agendador para um contexto isolado (seja um pool de threads ou processos dedicados), prevenindo o bloqueio do motor interno.
+
+### 1.4. Agendadores (Schedulers)
+A interface central de controle do sistema. Orquestra a inicialização, modificação e encerramento das tarefas, vinculando os gatilhos aos seus respectivos repositórios de armazenamento e enviando as tarefas prontas aos executores.
+
+---
+
+## 2. Matriz de Seleção de Componentes
+
+A especificação do agendador e do gatilho varia estritamente segundo os requisitos arquiteturais da aplicação em que o serviço está integrado.
+
+| Componente | Cenário de Aplicação Recomendado | Características Técnicas Principais |
+| :--- | :--- | :--- |
+| **`BlockingScheduler`** | Scripts ou serviços isolados onde o agendador é o processo principal e único da thread. | Bloqueia a execução da thread principal chamando o método `.start()`. |
+| **`BackgroundScheduler`** | Aplicações web modernas (ex: FastAPI, Flask) que operam de forma paralela. | Executa tarefas em segundo plano através de uma thread daemon gerenciada. |
+| **`AsyncIOScheduler`** | Aplicações assíncronas nativas orientadas a eventos. | Utiliza o loop de eventos padrão da biblioteca `asyncio`. |
+
+### 2.1. Configuração Padrão de Gatilhos
+* **Execução Pontual (`date`):** Utilizado para rotinas que ocorrem uma única vez. Requer definição estrita do argumento `run_date`.
+* **Execução Intervalar (`interval`):** Utilizado quando há necessidade de recorrência periódica fixa (ex: a cada *n* minutos), independente do calendário civil.
+* **Agendamento Baseado em Calendário (`cron`):** Utilizado para regras complexas ligadas a dias da semana, horários comerciais ou meses específicos.
+
+---
+
+## 3. Padrão de Implementação e Código Limpo
+
+Abaixo consta o trecho de referência padronizado para inicialização e registro de tarefas dentro do ecossistema deste projeto.
+
+```python
+from datetime import datetime
+from pytz import timezone
+from apscheduler.schedulers.background import BackgroundScheduler
+
+# 1. Definição explícita do fuso horário corporativo padrão
+FUSO_HORARIO = timezone("America/Sao_Paulo")
+
+# 2. Inicialização do Agendador em Segundo Plano
+scheduler = BackgroundScheduler(timezone=FUSO_HORARIO)
+
+def executar_manutencao_dados():
+    """Tarefa programada: Executa a higienização de logs do banco."""
+    print(f"[{datetime.now()}] Início do ciclo de manutenção de dados.")
+    # Inserir lógica de negócio encapsulada aqui
+    
+# 3. Registro de Tarefa Recorrente utilizando Expressão Cron
+scheduler.add_job(
+    executar_manutencao_dados,
+    trigger='cron',
+    day_of_week='mon-fri',
+    hour=22,
+    minute=0,
+    id='job_manutencao_diaria',
+    replace_existing=True
+)
