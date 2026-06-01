@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python -c \"import apscheduler; print\\('APScheduler', apscheduler.__version__, 'instalado com sucesso!'\\)\")"
+    ]
+  }
+}
